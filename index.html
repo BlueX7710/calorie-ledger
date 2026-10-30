@@ -34,7 +34,7 @@
 html,body{background:var(--bg)}
 body{color:var(--ink);font-family:var(--body);font-size:15px;line-height:1.5}
 .wrap{max-width:560px;margin:0 auto;padding-block:18px calc(110px + env(safe-area-inset-bottom,0px));padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
-.view{display:grid;gap:18px}
+.view{display:grid;grid-template-columns:minmax(0,1fr);gap:18px}
 .disp{font-family:var(--display);font-weight:800;font-stretch:75%;letter-spacing:-.02em;line-height:.9;text-transform:uppercase;margin:0;text-wrap:balance}
 h1.disp{font-size:clamp(2.6rem,11vw,3.6rem)}
 h2.disp{font-size:1.6rem}
