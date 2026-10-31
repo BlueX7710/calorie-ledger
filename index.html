@@ -89,6 +89,12 @@ form .solid{grid-column:1/-1}
 .empty{color:var(--muted);text-align:center;padding:10px}
 
 /* scan */
+.finder video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.capture{width:74px;height:74px;border-radius:50%;background:var(--tomato);border:5px solid var(--paper);box-shadow:0 0 0 3px var(--tomato);padding:0}
+.keycard ol{margin:8px 0 12px;padding-left:20px;display:grid;gap:4px}
+.keycard a{color:var(--tomato);font-weight:600}
+.keyrow{display:flex;gap:8px;flex-wrap:wrap}.keyrow input{flex:1 1 200px}
+.hint{display:grid;gap:6px}.hint label{font-size:.8rem;color:var(--muted)}
 .finder{position:relative;aspect-ratio:3/4;max-width:100%;border-radius:26px;background:var(--ink);overflow:hidden;display:grid;place-items:center;border:2px solid var(--ink);box-shadow:5px 5px 0 var(--tomato)}
 .finder img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
 .finder .corners{position:absolute;inset:22px;pointer-events:none;--c:var(--yolk);
@@ -197,6 +203,44 @@ nav.tabs{position:fixed;left:0;right:0;bottom:0;z-index:5;display:flex;justify-c
     </div>
   </section>
 
+  <!-- SCAN -->
+  <section class="view" id="v-scan" hidden>
+    <div><div class="eyebrow">AI food scanner</div><h1 class="disp">Snap your plate</h1></div>
+    <div class="card keycard" id="keySetup" hidden>
+      <h2 class="disp">One-time setup</h2>
+      <ol>
+        <li>Open <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a> and sign in with Google.</li>
+        <li>Tap <b>Create API key</b> and copy it. It's free and needs no card.</li>
+        <li>Paste it here. It stays on this device only.</li>
+      </ol>
+      <div class="keyrow"><input id="keyInput" placeholder="Paste your Gemini API key" autocomplete="off" aria-label="Gemini API key"><button class="solid" id="keySave">Save key</button></div>
+    </div>
+    <div id="scanner" hidden>
+      <div class="finder" id="finder">
+        <video id="cam" playsinline muted hidden></video>
+        <img id="preview" alt="Your food photo" hidden>
+        <div class="corners"></div>
+        <div class="beam"></div>
+        <div class="prompt" id="finderPrompt">
+          <div class="disp">Point. Shoot.<br>Eat.</div>
+          <button class="hot" id="camStart">Turn on camera</button>
+        </div>
+      </div>
+      <div class="scan-actions" style="margin-top:14px">
+        <button class="capture" id="snap" aria-label="Take photo and scan" hidden></button>
+        <button id="retake" hidden>Retake</button>
+        <label class="btn" for="photoLib">Choose from photos</label>
+        <input id="photoLib" type="file" accept="image/*" hidden>
+      </div>
+      <div class="hint" style="margin-top:14px">
+        <label for="scanHint">Tell the scanner what the photo can't show (optional, improves accuracy)</label>
+        <input id="scanHint" placeholder="e.g. fried in butter, whole milk, 2 tbsp ranch, half eaten">
+      </div>
+      <p class="status" id="scanStatus" style="margin-top:12px">Scans use Google Gemini's free tier with your own key. Always check the numbers before adding.</p>
+      <div id="scanResults"></div>
+    </div>
+  </section>
+
   <!-- WEEK -->
   <section class="view" id="v-week" hidden>
     <div><div class="eyebrow">Last seven days</div><h1 class="disp">The week</h1></div>
@@ -214,12 +258,19 @@ nav.tabs{position:fixed;left:0;right:0;bottom:0;z-index:5;display:flex;justify-c
       <h2 class="disp">Colors</h2>
       <div class="swatches" id="swatches"></div>
     </div>
+    <div class="card">
+      <h2 class="disp">Scanner key</h2>
+      <p class="note" id="keyState" style="text-align:left;margin-top:8px"></p>
+      <button id="keyRemove" style="margin-top:8px">Remove key</button>
+    </div>
     <p class="note" id="storeNote"></p>
   </section>
 </div>
 
 <nav class="tabs" aria-label="Sections"><div class="inner">
   <a href="#today" data-v="today">Today</a>
+  <a href="#scan" data-v="scan" class="scan">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="12" r="3.5"/></svg>Scan</a>
   <a href="#week" data-v="week">Week</a>
 </div></nav>
 
@@ -264,8 +315,8 @@ function add(name,kcal,meal,day=state.cur){
 
 // Views
 function show(v){
-  if(!["today","week"].includes(v))v="today";
-  for(const s of ["today","week"])el("v-"+s).hidden=s!==v;
+  if(!["today","scan","week"].includes(v))v="today";
+  for(const s of ["today","scan","week"])el("v-"+s).hidden=s!==v;
   document.querySelectorAll(".tabs a").forEach(a=>a.setAttribute("aria-current",a.dataset.v===v?"page":"false"));
   window.scrollTo(0,0);
 }
@@ -363,6 +414,113 @@ render();show(location.hash.slice(1));
 
 </script>
 
+<script>
+// Live camera scanner, using Google Gemini with the viewer's own key
+(()=>{
+  const MODEL="gemini-2.5-flash",KEY="calorie-ledger-gemini-key";
+  const getKey=()=>{try{return localStorage.getItem(KEY)||""}catch(e){return""}};
+  const status=el("scanStatus"),out=el("scanResults"),finder=el("finder"),cam=el("cam"),preview=el("preview");
+  let stream=null;
+
+  function syncKey(){const k=getKey();el("keySetup").hidden=!!k;el("scanner").hidden=!k;
+    el("keyState").textContent=k?"A Gemini key ending in …"+k.slice(-4)+" is saved on this device.":"No key saved. Add one on the Scan page.";
+    el("keyRemove").hidden=!k}
+  el("keySave").onclick=()=>{const v=el("keyInput").value.trim();if(v.length<20){el("keyInput").focus();return}
+    try{localStorage.setItem(KEY,v)}catch(e){}el("keyInput").value="";syncKey()};
+  el("keyRemove").onclick=()=>{try{localStorage.removeItem(KEY)}catch(e){}stopCam();syncKey()};
+  syncKey();
+
+  async function startCam(){
+    try{
+      stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"},width:{ideal:1920},height:{ideal:1440}},audio:false});
+      cam.srcObject=stream;await cam.play();
+      cam.hidden=false;preview.hidden=true;el("finderPrompt").hidden=true;el("snap").hidden=false;el("retake").hidden=true;out.innerHTML="";
+      status.textContent="Fit the whole plate in the frame, then tap the red button.";
+    }catch(e){status.textContent=e.name==="NotAllowedError"?"Camera access was blocked. Allow the camera for this site in your browser settings, or choose a photo instead.":"Couldn't start the camera. You can choose a photo instead."}
+  }
+  function stopCam(){if(stream){stream.getTracks().forEach(t=>t.stop());stream=null}cam.hidden=true;el("snap").hidden=true}
+  window.addEventListener("hashchange",()=>{if(location.hash!=="#scan")stopCam()});
+  document.addEventListener("visibilitychange",()=>{if(document.hidden)stopCam()});
+  el("camStart").onclick=startCam;
+  el("retake").onclick=startCam;
+
+  function toJpeg(src,w,h){const s=Math.min(1,1280/Math.max(w,h)),c=document.createElement("canvas");
+    c.width=Math.round(w*s);c.height=Math.round(h*s);c.getContext("2d").drawImage(src,0,0,c.width,c.height);return c.toDataURL("image/jpeg",.85)}
+  el("snap").onclick=()=>{if(!stream)return;const url=toJpeg(cam,cam.videoWidth,cam.videoHeight);stopCam();scan(url)};
+  el("photoLib").addEventListener("change",e=>{const file=e.target.files[0];e.target.value="";if(!file)return;
+    const img=new Image();img.onload=()=>{stopCam();scan(toJpeg(img,img.naturalWidth,img.naturalHeight));URL.revokeObjectURL(img.src)};
+    img.onerror=()=>{status.textContent="That file couldn't be opened as a photo."};img.src=URL.createObjectURL(file)});
+
+  async function scan(dataUrl){
+    preview.src=dataUrl;preview.hidden=false;el("finderPrompt").hidden=true;el("retake").hidden=false;
+    out.innerHTML="";finder.classList.add("busy");status.textContent="Reading your plate…";
+    const day=state.cur,hint=el("scanHint").value.trim();
+    const prompt="You are a registered dietitian estimating calories from a photo of food someone is about to eat. Work carefully:\n"+
+      "1. Identify every distinct food and drink. Look closely at textures, colors and garnishes to tell similar foods apart (e.g. brown vs white rice, fried vs grilled).\n"+
+      "2. Estimate each portion in grams or millilitres using objects of known size as a scale: a standard dinner plate is about 26 cm across, a fork about 19 cm, a mug about 350 ml, a hand about 18 cm long. Account for depth and pile height, not just area.\n"+
+      "3. Account for hidden calories: cooking oil or butter on anything that looks fried, sautéed or glossy; dressings, sauces, cheese and spreads. List a significant hidden fat or sauce as its own item.\n"+
+      "4. Compute calories from standard nutrition reference values (USDA-style) for that weight and preparation. Do not count anything twice.\n"+
+      "5. Rate your confidence for each item: high, medium or low.\n"+
+      (hint?"The person added this context, which overrides what the photo suggests: \""+hint.slice(0,300)+"\"\n":"")+
+      'Reply with JSON only: {"dish":"short name for the whole meal","items":[{"name":"food with portion, e.g. Spaghetti bolognese, ~350 g","kcal":integer best estimate,"low":integer,"high":integer,"confidence":"high|medium|low","note":"one short reason naming the portion cue and preparation used"}]}. '+
+      'If there is no food in the image, reply {"dish":"","items":[]}.';
+    try{
+      const r=await fetch("https://generativelanguage.googleapis.com/v1beta/models/"+MODEL+":generateContent",{method:"POST",
+        headers:{"Content-Type":"application/json","x-goog-api-key":getKey()},
+        body:JSON.stringify({contents:[{parts:[{text:prompt},{inline_data:{mime_type:"image/jpeg",data:dataUrl.split(",")[1]}}]}],
+          generationConfig:{responseMimeType:"application/json",temperature:0.2}})});
+      if(!r.ok){
+        const body=await r.json().catch(()=>({})),msg=(body.error&&body.error.message)||"";
+        throw {code:r.status===429?"limit":(r.status===400&&/key/i.test(msg))||r.status===403?"key":"other",msg};
+      }
+      const data=await r.json();
+      const text=(data.candidates?.[0]?.content?.parts||[]).map(p=>p.text||"").join("");
+      let res;try{res=JSON.parse(text.replace(/^```(json)?|```$/g,"").trim())}catch(e){throw {code:"parse"}}
+      renderReceipt(res,day);
+    }catch(e){
+      status.textContent=e.code==="limit"?"You've hit Gemini's free limit for now. Wait a minute (or until tomorrow for the daily limit) and try again.":
+        e.code==="key"?"Gemini rejected the key. Check it on the Week page, or remove it and paste it again.":
+        e.code==="parse"?"The scanner gave an answer the app couldn't read. Try again.":
+        navigator.onLine===false?"You're offline. Scanning needs an internet connection.":"Couldn't scan that photo. Try again.";
+    }finally{finder.classList.remove("busy")}
+  }
+
+  function renderReceipt(res,day){
+    const list=(res&&Array.isArray(res.items)?res.items:[]).filter(i=>i&&i.name&&Number.isFinite(+i.kcal));
+    if(!list.length){status.textContent="No food found in that photo. Try a clearer, closer shot.";return}
+    status.textContent="Check the estimates, pick a meal, then add.";
+    let meal=state.meal;
+    const r=document.createElement("div");r.className="receipt";
+    const h=document.createElement("h3");h.textContent=res.dish||"Your plate";r.append(h);
+    const rows=[];
+    for(const it of list){
+      const row=document.createElement("div");row.className="ritem";
+      const n=document.createElement("span");n.className="nm";n.textContent=it.name;
+      const k=document.createElement("input");k.type="number";k.min="0";k.value=Math.round(+it.kcal);k.setAttribute("aria-label","Calories for "+it.name);
+      const b=document.createElement("button");b.textContent="Add";
+      const rec={name:String(it.name),k,b,done:false};rows.push(rec);
+      b.onclick=()=>{if(rec.done)return;add(rec.name,Math.max(0,Math.round(+k.value)||0),meal,day);rec.done=true;b.textContent="✓";b.disabled=true;k.disabled=true};
+      k.oninput=upd;row.append(n,k,b);
+      const w=document.createElement("span");w.className="why";
+      const cf=["high","medium","low"].includes(it.confidence)?it.confidence:"medium";
+      const tag=document.createElement("span");tag.className="conf "+cf;tag.textContent=cf;w.append(tag);
+      if(Number.isFinite(+it.low)&&Number.isFinite(+it.high)&&+it.high>+it.low)w.append("Range "+fmt(Math.round(+it.low))+"–"+fmt(Math.round(+it.high))+" kcal. ");
+      if(it.note)w.append(String(it.note));
+      row.append(w);r.append(row);
+    }
+    const tot=document.createElement("div");tot.className="rtotal";r.append(tot);
+    function upd(){tot.innerHTML=`<span>TOTAL</span><span>${fmt(rows.reduce((s,x)=>s+(Math.round(+x.k.value)||0),0))} kcal</span>`}
+    upd();
+    const foot=document.createElement("div");foot.className="rfoot";
+    const mp=document.createElement("div");mp.className="meals";mp.setAttribute("role","group");mp.setAttribute("aria-label","Meal");
+    const drawMeals=()=>{mp.innerHTML="";for(const m of MEALS){const b=document.createElement("button");b.type="button";b.textContent=m;b.setAttribute("aria-pressed",m===meal);b.onclick=()=>{meal=m;drawMeals()};mp.append(b)}};
+    drawMeals();
+    const all=document.createElement("button");all.className="hot";all.textContent="Add all to "+label(day).toLowerCase();
+    all.onclick=()=>{rows.forEach(x=>x.b.click());all.disabled=true;all.textContent="Added. Back to plate";setTimeout(()=>{location.hash="today"},700)};
+    foot.append(mp,all);r.append(foot);out.append(r);
+  }
+})();
+</script>
 <script>if("serviceWorker" in navigator)navigator.serviceWorker.register("sw.js").catch(()=>{});</script>
 </body>
 </html>
